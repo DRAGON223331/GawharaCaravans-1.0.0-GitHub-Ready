@@ -1,3 +1,4 @@
+
 name: Build GawharaCaravans
 
 on:
@@ -12,6 +13,7 @@ jobs:
   build:
     name: Build Plugin JAR
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout source
         uses: actions/checkout@v4
@@ -26,16 +28,24 @@ jobs:
       - name: Build with Maven
         run: mvn --batch-mode --no-transfer-progress clean verify
 
-      - name: Verify plugin JAR contents
+      - name: Find and verify plugin JAR
+        shell: bash
         run: |
-          test -f target/GawharaCaravans-1.0.0.jar
-          jar tf target/GawharaCaravans-1.0.0.jar | grep -q 'plugin.yml'
-          jar tf target/GawharaCaravans-1.0.0.jar | grep -q 'com/gawharasmp/caravans/GawharaCaravans.class'
+          set -euo pipefail
+          JAR_FILE="$(find target -maxdepth 1 -type f -name 'GawharaCaravans-*.jar' -print -quit)"
+          if [[ -z "$JAR_FILE" ]]; then
+            echo "No GawharaCaravans JAR found"
+            ls -lah target/ || true
+            exit 1
+          fi
+          echo "Found: $JAR_FILE"
+          jar tf "$JAR_FILE" | grep -qx 'plugin.yml'
+          jar tf "$JAR_FILE" | grep -qx 'com/gawharasmp/caravans/GawharaCaravans.class'
 
       - name: Upload plugin JAR
         uses: actions/upload-artifact@v4
         with:
-          name: GawharaCaravans-1.0.0
-          path: target/GawharaCaravans-1.0.0.jar
+          name: GawharaCaravans-JAR
+          path: target/GawharaCaravans-*.jar
           if-no-files-found: error
           retention-days: 30
