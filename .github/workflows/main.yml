@@ -1,21 +1,22 @@
-
 name: Build GawharaCaravans
 
 on:
   workflow_dispatch:
   push:
-    branches: [main, master]
+    branches:
+      - main
+      - master
 
 permissions:
   contents: read
 
 jobs:
   build:
-    name: Build Plugin JAR
+    name: Build GawharaCaravans JAR
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout source
+      - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Set up Java 25
@@ -25,27 +26,49 @@ jobs:
           java-version: '25'
           cache: maven
 
-      - name: Build with Maven
-        run: mvn --batch-mode --no-transfer-progress clean verify
-
-      - name: Find and verify plugin JAR
+      - name: Verify Maven project
         shell: bash
         run: |
           set -euo pipefail
-          JAR_FILE="$(find target -maxdepth 1 -type f -name 'GawharaCaravans-*.jar' -print -quit)"
+          if [[ ! -f pom.xml ]]; then
+            echo 'pom.xml was not found in the repository root.'
+            echo 'Upload the contents of the plugin project, not its parent folder.'
+            exit 1
+          fi
+          echo 'Maven project found:'
+          mvn --batch-mode help:evaluate -Dexpression=project.groupId -q -DforceStdout
+          mvn --batch-mode help:evaluate -Dexpression=project.artifactId -q -DforceStdout
+          mvn --batch-mode help:evaluate -Dexpression=project.version -q -DforceStdout
+
+      - name: Build with Maven
+        run: mvn --batch-mode --no-transfer-progress clean verify
+
+      - name: Find and verify generated plugin JAR
+        id: find-jar
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          JAR_FILE="$(find target -maxdepth 1 -type f -name 'GawharaCaravans-*.jar' \
+            ! -name '*-sources.jar' ! -name '*-javadoc.jar' -print -quit)"
+
           if [[ -z "$JAR_FILE" ]]; then
-            echo "No GawharaCaravans JAR found"
+            echo 'GawharaCaravans JAR was not found. Files in target/:'
             ls -lah target/ || true
             exit 1
           fi
-          echo "Found: $JAR_FILE"
+
+          echo "Found JAR: $JAR_FILE"
           jar tf "$JAR_FILE" | grep -qx 'plugin.yml'
           jar tf "$JAR_FILE" | grep -qx 'com/gawharasmp/caravans/GawharaCaravans.class'
+
+          echo "plugin_jar=$JAR_FILE" >> "$GITHUB_OUTPUT"
+          echo "Verified: $JAR_FILE"
 
       - name: Upload plugin JAR
         uses: actions/upload-artifact@v4
         with:
           name: GawharaCaravans-JAR
-          path: target/GawharaCaravans-*.jar
+          path: ${{ steps.find-jar.outputs.plugin_jar }}
           if-no-files-found: error
           retention-days: 30
