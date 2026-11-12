@@ -5,7 +5,7 @@
     <modelVersion>4.0.0</modelVersion>
     <groupId>com.gawharasmp</groupId>
     <artifactId>GawharaCaravans</artifactId>
-    <version>1.0.0</version>
+    <version>1.0.1</version>
     <packaging>jar</packaging>
     <name>GawharaCaravans</name>
     <description>Random traveling merchants with Vault economy for GawharaSMP</description>
