@@ -13,11 +13,11 @@
 
 1. ارفع محتويات المشروع إلى Repository جديد.
 2. افتح Actions وشغّل **Build GawharaCaravans** أو ادفع commit إلى `main`.
-3. بعد نجاح البناء، افتح Artifact باسم `GawharaCaravans-1.0.1` وحمّل JAR.
+3. بعد نجاح البناء، افتح Artifact باسم `GawharaCaravans-JAR` وحمّل JAR.
 
 ## التثبيت
 
-ضع `GawharaCaravans-1.0.1.jar` في `plugins` مع Vault وبلجن الاقتصاد، ثم أعد تشغيل السيرفر. سيُنشأ `plugins/GawharaCaravans/config.yml` تلقائيًا.
+ضع `GawharaCaravans-<version>.jar` في `plugins` مع Vault وبلجن الاقتصاد، ثم أعد تشغيل السيرفر. سيُنشأ `plugins/GawharaCaravans/config.yml` تلقائيًا.
 
 ## كيف يعمل
 

@@ -5,6 +5,6 @@
 3. افتح تبويب **Actions**.
 4. اختر **Build GawharaCaravans** ثم اضغط **Run workflow**، أو اعمل Push إلى فرع `main`.
 5. بعد نجاح المهمة، افتح صفحة التشغيل وانزل إلى **Artifacts**.
-6. نزّل `GawharaCaravans-1.0.1`، وفك ضغطه لتحصل على `GawharaCaravans-1.0.1.jar`.
+6. نزّل `GawharaCaravans-JAR`، وفك ضغطه لتحصل على `GawharaCaravans-JAR.jar`.
 
 المشروع يستخدم JDK 25 وPaper API 26.3 build 170-beta وVaultAPI 1.7.
