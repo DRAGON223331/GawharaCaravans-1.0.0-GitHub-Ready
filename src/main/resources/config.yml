@@ -1,0 +1,144 @@
+# =====================================================
+# GawharaCaravans 1.0.0 - GawharaSMP
+# Paper 26.3 / Java 25 / Vault Economy
+# =====================================================
+
+settings:
+  # Only these worlds can receive random caravans.
+  enabled-worlds:
+    - world
+    - world_nether
+    - world_the_end
+  # These worlds are always blocked, even if added above by mistake.
+  blocked-worlds:
+    - spawn
+  # First caravan after server startup.
+  initial-delay-minutes: 10
+  # Random delay between later caravans.
+  interval-minutes:
+    min: 45
+    max: 90
+  # Time before automatic despawn.
+  stay-minutes: 18
+  # Broadcast warning this many minutes before a scheduled caravan.
+  announce-before-minutes: 2
+  # How many safe locations to test before skipping a spawn.
+  spawn-attempts: 50
+  # Keep caravans away from the world's spawn point.
+  protect-spawn-radius: 180
+  # Random position is selected in this ring around the center.
+  spawn-radius:
+    min: 250
+    max: 750
+  # If configured, this coordinate becomes the random-spawn center for a world.
+  # Set it in-game with /caravans setcenter.
+  respect-world-border: true
+
+merchant:
+  name: '&b&lGawhara &fTraveling Merchant'
+  profession: ARMORER
+  llamas: 2
+  llama-name: '&eCaravan Llama'
+  invulnerable: true
+  silent: false
+
+shop:
+  title: '&3&lGawhara &8| &bCaravan'
+  rows: 4
+  currency-label: '$'
+  dynamic-prices:
+    enabled: true
+    min-multiplier: 0.85
+    max-multiplier: 1.25
+  messages:
+    no-stock: '&cThe caravan is out of stock for that item.'
+    not-enough-money: '&cYou do not have enough money.'
+    not-enough-items: '&cYou do not have enough items to sell.'
+    bought: '&aYou bought &f%amount%x %item% &afor &e%price%&a.'
+    sold: '&aYou sold &f%amount%x %item% &afor &e%price%&a.'
+    full-inventory: '&eYour inventory was full. Extra items were dropped at your feet.'
+
+# Products rotate with each caravan. Stock and prices are randomized per visit.
+# Left click = buy 1, right click = buy 8, shift-left = sell 1, shift-right = sell 8.
+  products:
+    diamond:
+      material: DIAMOND
+      name: '&bDiamond'
+      slot: 10
+      amount: 1
+      buy-price: 950.0
+      sell-price: 300.0
+      min-stock: 2
+      max-stock: 8
+    emerald:
+      material: EMERALD
+      name: '&aEmerald'
+      slot: 11
+      amount: 1
+      buy-price: 320.0
+      sell-price: 95.0
+      min-stock: 6
+      max-stock: 20
+    golden_apple:
+      material: GOLDEN_APPLE
+      name: '&6Golden Apple'
+      slot: 12
+      amount: 1
+      buy-price: 650.0
+      sell-price: 180.0
+      min-stock: 2
+      max-stock: 10
+    ancient_debris:
+      material: ANCIENT_DEBRIS
+      name: '&5Ancient Debris'
+      slot: 13
+      amount: 1
+      buy-price: 2400.0
+      sell-price: 900.0
+      min-stock: 1
+      max-stock: 4
+    name_tag:
+      material: NAME_TAG
+      name: '&eName Tag'
+      slot: 14
+      amount: 1
+      buy-price: 420.0
+      sell-price: 120.0
+      min-stock: 2
+      max-stock: 8
+    experience_bottle:
+      material: EXPERIENCE_BOTTLE
+      name: "&aBottle of Enchanting"
+      slot: 15
+      amount: 1
+      buy-price: 90.0
+      sell-price: 20.0
+      min-stock: 12
+      max-stock: 40
+    shulker_shell:
+      material: SHULKER_SHELL
+      name: '&dShulker Shell'
+      slot: 16
+      amount: 1
+      buy-price: 1350.0
+      sell-price: 420.0
+      min-stock: 1
+      max-stock: 5
+
+messages:
+  prefix: '&8[&bCaravan&8] &r'
+  approaching: '&bA traveling merchant caravan is approaching the world of &f%world%&b!'
+  spawned: '&bThe caravan has arrived in &f%world% &7at &f%x, %y, %z&b. Use &f/caravans locate &bto find it!'
+  despawned: '&7The traveling caravan has packed up and left.'
+  no-active: '&cThere is no active caravan right now.'
+  located: '&bThe caravan is in &f%world% &7at &f%x, %y, %z&b.'
+  denied-world: '&cCaravans are disabled in that world.'
+  unsafe-location: '&cCould not find a safe location. Try a different center or larger radius.'
+  already-active: '&cA caravan is already visiting the server.'
+  spawned-manual: '&aA caravan was spawned successfully.'
+  reloaded: '&aGawharaCaravans configuration reloaded.'
+  center-set: '&aCaravan center saved for world &f%world%&a.'
+  admin-only: '&cYou do not have permission to do that.'
+  player-only: '&cThis command can only be used by a player.'
+  usage: '&eUse: /caravans <info|locate|spawn [world]|despawn|setcenter|reload>'
+  info: '&bActive: &f%active% &8| &bWorlds: &f%worlds%'
