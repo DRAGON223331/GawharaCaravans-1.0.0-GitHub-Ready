@@ -53,6 +53,7 @@ shop:
   messages:
     no-stock: '&cThe caravan is out of stock for that item.'
     not-enough-money: '&cYou do not have enough money.'
+    not-enough-coins: '&cYou do not have enough Gawhara Coins.'
     not-enough-items: '&cYou do not have enough items to sell.'
     bought: '&aYou bought &f%amount%x %item% &afor &e%price%&a.'
     sold: '&aYou sold &f%amount%x %item% &afor &e%price%&a.'
@@ -67,6 +68,7 @@ shop:
       slot: 10
       amount: 1
       buy-price: 950.0
+      coins-buy-price: 4
       sell-price: 300.0
       min-stock: 2
       max-stock: 8
@@ -76,6 +78,7 @@ shop:
       slot: 11
       amount: 1
       buy-price: 320.0
+      coins-buy-price: 2
       sell-price: 95.0
       min-stock: 6
       max-stock: 20
@@ -85,6 +88,7 @@ shop:
       slot: 12
       amount: 1
       buy-price: 650.0
+      coins-buy-price: 5
       sell-price: 180.0
       min-stock: 2
       max-stock: 10
@@ -94,6 +98,7 @@ shop:
       slot: 13
       amount: 1
       buy-price: 2400.0
+      coins-buy-price: 10
       sell-price: 900.0
       min-stock: 1
       max-stock: 4
@@ -103,6 +108,7 @@ shop:
       slot: 14
       amount: 1
       buy-price: 420.0
+      coins-buy-price: 3
       sell-price: 120.0
       min-stock: 2
       max-stock: 8
@@ -112,6 +118,7 @@ shop:
       slot: 15
       amount: 1
       buy-price: 90.0
+      coins-buy-price: 1
       sell-price: 20.0
       min-stock: 12
       max-stock: 40
@@ -121,6 +128,7 @@ shop:
       slot: 16
       amount: 1
       buy-price: 1350.0
+      coins-buy-price: 6
       sell-price: 420.0
       min-stock: 1
       max-stock: 5
@@ -128,10 +136,10 @@ shop:
 messages:
   prefix: '&8[&bCaravan&8] &r'
   approaching: '&bA traveling merchant caravan is approaching the world of &f%world%&b!'
-  spawned: '&bThe caravan has arrived in &f%world% &7at &f%x, %y, %z&b. Use &f/caravans locate &bto find it!'
+  spawned: '&bThe caravan has arrived in &f%world% &7at &f%x%, %y%, %z%&b. Use &f/caravans locate &bto find it!'
   despawned: '&7The traveling caravan has packed up and left.'
   no-active: '&cThere is no active caravan right now.'
-  located: '&bThe caravan is in &f%world% &7at &f%x, %y, %z&b.'
+  located: '&bThe caravan is in &f%world% &7at &f%x%, %y%, %z%&b.'
   denied-world: '&cCaravans are disabled in that world.'
   unsafe-location: '&cCould not find a safe location. Try a different center or larger radius.'
   already-active: '&cA caravan is already visiting the server.'

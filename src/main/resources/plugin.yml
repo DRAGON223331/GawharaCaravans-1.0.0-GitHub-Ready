@@ -1,10 +1,10 @@
 name: GawharaCaravans
-version: 1.0.1
+version: 1.1.0
 main: com.gawharasmp.caravans.GawharaCaravans
 api-version: '26.3'
 authors: [GawharaSMP]
-description: Random traveling caravans with a dynamic Vault shop.
-depend: [Vault]
+description: Random traveling caravans with a Vault and GawharaCoins dual-currency shop.
+depend: [Vault, GawharaCoins]
 softdepend: [Essentials]
 commands:
   caravans:

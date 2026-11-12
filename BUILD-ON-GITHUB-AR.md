@@ -1,10 +1,8 @@
-# استخراج ملف JAR من GitHub
+# بناء GawharaCaravans على GitHub
 
-1. أنشئ Repository جديدًا على GitHub.
-2. ارفع محتويات هذا المجلد إلى جذر الـ Repository، بما فيها مجلد `.github` وملف `pom.xml` ومجلد `src`.
-3. افتح تبويب **Actions**.
-4. اختر **Build GawharaCaravans** ثم اضغط **Run workflow**، أو اعمل Push إلى فرع `main`.
-5. بعد نجاح المهمة، افتح صفحة التشغيل وانزل إلى **Artifacts**.
-6. نزّل `GawharaCaravans-JAR`، وفك ضغطه لتحصل على `GawharaCaravans-JAR.jar`.
+1. ارفع محتويات هذا المجلد إلى Repository.
+2. تأكد من وجود `.github/workflows/main.yml`.
+3. افتح Actions وشغّل `Build GawharaCaravans`.
+4. بعد النجاح حمّل Artifact باسم `GawharaCaravans-JAR`.
 
-المشروع يستخدم JDK 25 وPaper API 26.3 build 170-beta وVaultAPI 1.7.
+المتطلبات: JDK 25 وPaper API 26.3 build 170-beta. لا ترفع مجلد `target` إلى GitHub؛ workflow يبنيه تلقائيًا.

@@ -43,6 +43,8 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Random;
 import java.util.UUID;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.stream.Collectors;
 
@@ -278,9 +280,10 @@ public final class GawharaCaravans extends JavaPlugin implements Listener, Comma
             int amount = Math.max(1, product.getInt("amount", 1));
             int slot = product.getInt("slot", 10);
             if (slot < 0 || slot >= 36) continue;
+            long coinBuyPrice = Math.max(0L, Math.round(product.getDouble("coins-buy-price", 0.0) * multiplier));
             ProductStock state = new ProductStock(id, material, product.getString("name", prettify(id)), slot, amount,
                     money(product.getDouble("buy-price", 100.0) * multiplier),
-                    money(product.getDouble("sell-price", 0.0) * multiplier), stock);
+                    money(product.getDouble("sell-price", 0.0) * multiplier), coinBuyPrice, stock);
             caravan.products.put(slot, state);
         }
     }
@@ -314,12 +317,16 @@ public final class GawharaCaravans extends JavaPlugin implements Listener, Comma
     }
 
     private void openShop(Player player, Caravan caravan) {
+        openShop(player, caravan, false);
+    }
+
+    private void openShop(Player player, Caravan caravan, boolean coinMode) {
         if (caravan == null || caravan != activeCaravan) {
             player.sendMessage(message("messages.no-active", Map.of()));
             return;
         }
         int rows = Math.max(3, Math.min(6, getConfig().getInt("shop.rows", 4)));
-        CaravanMenuHolder holder = new CaravanMenuHolder(caravan.id, caravan.products);
+        CaravanMenuHolder holder = new CaravanMenuHolder(caravan.id, caravan.products, coinMode);
         Inventory inventory = Bukkit.createInventory(holder, rows * 9, color(getConfig().getString("shop.title", "&3&lGawhara &8| &bCaravan")));
         holder.setInventory(inventory);
         ItemStack filler = namedItem(Material.CYAN_STAINED_GLASS_PANE, "&8 ", List.of());
@@ -331,23 +338,28 @@ public final class GawharaCaravans extends JavaPlugin implements Listener, Comma
             inventory.setItem(product.slot, createProductItem(product));
         }
         int infoSlot = inventory.getSize() - 5;
-        inventory.setItem(infoSlot, namedItem(Material.BOOK, "&b&lHow to Trade", List.of(
+        inventory.setItem(infoSlot - 2, namedItem(Material.BOOK, "&b&lHow to Trade", List.of(
                 "&fLeft click: &aBuy 1",
                 "&fRight click: &aBuy 8",
-                "&fShift + Left: &eSell 1",
-                "&fShift + Right: &eSell 8",
+                "&fShift + Left: &eSell 1 for Vault",
+                "&fShift + Right: &eSell 8 for Vault",
                 "&7Stock changes with every visit.")));
+        inventory.setItem(infoSlot, namedItem(coinMode ? Material.GOLD_INGOT : Material.EMERALD,
+                coinMode ? "&e&lCurrency: Gawhara Coins" : "&a&lCurrency: Vault Cash",
+                List.of("&7Click to switch currency mode.", "&fCurrent mode: " + (coinMode ? "&eGC" : "&aVault"),
+                        "&7Products with a GC price can be purchased using GC.")));
         player.openInventory(inventory);
     }
 
     private ItemStack createProductItem(ProductStock product) {
         List<String> lore = new ArrayList<>();
         lore.add(color("&7Stock: &f" + product.stock));
-        lore.add(color("&aBuy: &f" + economy.format(product.buyPrice) + " &8(per item)"));
+        lore.add(color("&aVault Buy: &f" + economy.format(product.buyPrice) + " &8(per item)"));
+        if (product.coinBuyPrice > 0L) lore.add(color("&eGC Buy: &f" + product.coinBuyPrice + " GC &8(per item)"));
         lore.add(color("&cSell: &f" + economy.format(product.sellPrice) + " &8(per item)"));
         lore.add(color("&8 "));
-        lore.add(color("&fLeft click: &aBuy 1"));
-        lore.add(color("&fRight click: &aBuy 8"));
+        lore.add(color("&fLeft click: &aBuy 1 using selected currency"));
+        lore.add(color("&fRight click: &aBuy 8 using selected currency"));
         lore.add(color("&fShift + Left: &eSell 1"));
         lore.add(color("&fShift + Right: &eSell 8"));
         ItemStack item = new ItemStack(product.material);
@@ -406,6 +418,12 @@ public final class GawharaCaravans extends JavaPlugin implements Listener, Comma
             player.sendMessage(message("messages.no-active", Map.of()));
             return;
         }
+        int currencySlot = event.getView().getTopInventory().getSize() - 5;
+        if (event.getRawSlot() == currencySlot) {
+            holder.coinMode = !holder.coinMode;
+            openShop(player, activeCaravan, holder.coinMode);
+            return;
+        }
         ProductStock product = holder.products.get(event.getRawSlot());
         if (product == null) return;
         ClickType click = event.getClick();
@@ -417,8 +435,58 @@ public final class GawharaCaravans extends JavaPlugin implements Listener, Comma
         else if (click == ClickType.SHIFT_RIGHT) { quantity = product.amount * 8; sell = true; }
         else return;
         if (sell) sellProduct(player, product, quantity);
+        else if (holder.coinMode) buyProductCoins(player, product, quantity);
         else buyProduct(player, product, quantity);
-        openShop(player, activeCaravan);
+        openShop(player, activeCaravan, holder.coinMode);
+    }
+
+    private boolean hasCoins(UUID playerId, long amount) {
+        var coins = Bukkit.getPluginManager().getPlugin("GawharaCoins");
+        if (coins == null || !coins.isEnabled()) return false;
+        try {
+            return Boolean.TRUE.equals(coins.getClass().getMethod("hasCoins", UUID.class, long.class).invoke(coins, playerId, amount));
+        } catch (ReflectiveOperationException ex) {
+            getLogger().warning("Could not access GawharaCoins balance API: " + ex.getMessage());
+            return false;
+        }
+    }
+
+    private boolean withdrawCoins(UUID playerId, long amount, String reason) {
+        var coins = Bukkit.getPluginManager().getPlugin("GawharaCoins");
+        if (coins == null || !coins.isEnabled()) return false;
+        try {
+            return Boolean.TRUE.equals(coins.getClass().getMethod("withdrawCoins", UUID.class, long.class, String.class)
+                    .invoke(coins, playerId, amount, reason));
+        } catch (ReflectiveOperationException ex) {
+            getLogger().warning("Could not withdraw GawharaCoins: " + ex.getMessage());
+            return false;
+        }
+    }
+
+    private void buyProductCoins(Player player, ProductStock product, int amount) {
+        if (product.coinBuyPrice <= 0L) {
+            player.sendMessage(color("&cThis product cannot be purchased with GC."));
+            return;
+        }
+        if (product.stock < amount) {
+            player.sendMessage(message("shop.messages.no-stock", Map.of()));
+            return;
+        }
+        long price = product.coinBuyPrice * amount;
+        if (!hasCoins(player.getUniqueId(), price)) {
+            player.sendMessage(color(getConfig().getString("shop.messages.not-enough-coins", "&cYou do not have enough GC.")));
+            return;
+        }
+        if (!withdrawCoins(player.getUniqueId(), price, "Caravan GC purchase: " + product.id)) {
+            player.sendMessage(color("&cGC payment failed."));
+            return;
+        }
+        ItemStack reward = new ItemStack(product.material, amount);
+        Map<Integer, ItemStack> leftovers = player.getInventory().addItem(reward);
+        for (ItemStack leftover : leftovers.values()) player.getWorld().dropItemNaturally(player.getLocation(), leftover);
+        product.stock -= amount;
+        player.sendMessage(color("&aYou bought &f" + amount + "x " + product.name + " &afor &e" + price + " GC&a."));
+        if (!leftovers.isEmpty()) player.sendMessage(message("shop.messages.full-inventory", Map.of()));
     }
 
     private void buyProduct(Player player, ProductStock product, int amount) {
@@ -611,7 +679,15 @@ public final class GawharaCaravans extends JavaPlugin implements Listener, Comma
         String prefix = getConfig().getString("messages.prefix", "&8[&bCaravan&8] &r");
         String body = getConfig().getString(path, "&cMissing message: " + path);
         String output = prefix + body;
-        for (Map.Entry<String, String> entry : values.entrySet()) output = output.replace("%" + entry.getKey() + "%", entry.getValue());
+        for (Map.Entry<String, String> entry : values.entrySet()) {
+            String key = entry.getKey();
+            String value = entry.getValue();
+            // Canonical format: %x%. Also accept the old malformed format (%x, %y, %z)
+            // so existing config.yml files keep working after upgrading.
+            output = output.replace("%" + key + "%", value);
+            Pattern legacyToken = Pattern.compile("%" + Pattern.quote(key) + "(?![A-Za-z0-9_])");
+            output = legacyToken.matcher(output).replaceAll(Matcher.quoteReplacement(value));
+        }
         return color(output);
     }
 
@@ -640,8 +716,9 @@ public final class GawharaCaravans extends JavaPlugin implements Listener, Comma
         private final int amount;
         private final double buyPrice;
         private final double sellPrice;
+        private final long coinBuyPrice;
         private int stock;
-        private ProductStock(String id, Material material, String name, int slot, int amount, double buyPrice, double sellPrice, int stock) {
+        private ProductStock(String id, Material material, String name, int slot, int amount, double buyPrice, double sellPrice, long coinBuyPrice, int stock) {
             this.id = id;
             this.material = material;
             this.name = name;
@@ -649,6 +726,7 @@ public final class GawharaCaravans extends JavaPlugin implements Listener, Comma
             this.amount = amount;
             this.buyPrice = buyPrice;
             this.sellPrice = sellPrice;
+            this.coinBuyPrice = coinBuyPrice;
             this.stock = stock;
         }
     }
@@ -657,9 +735,11 @@ public final class GawharaCaravans extends JavaPlugin implements Listener, Comma
         private final UUID caravanId;
         private final Map<Integer, ProductStock> products;
         private Inventory inventory;
-        private CaravanMenuHolder(UUID caravanId, Map<Integer, ProductStock> products) {
+        private boolean coinMode;
+        private CaravanMenuHolder(UUID caravanId, Map<Integer, ProductStock> products, boolean coinMode) {
             this.caravanId = caravanId;
             this.products = products;
+            this.coinMode = coinMode;
         }
         private void setInventory(Inventory inventory) { this.inventory = inventory; }
         @Override
