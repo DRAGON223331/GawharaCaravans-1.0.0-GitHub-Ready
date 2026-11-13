@@ -30,7 +30,17 @@ import org.bukkit.entity.Player;
 import org.bukkit.entity.Villager;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
+import org.bukkit.event.block.BlockBreakEvent;
+import org.bukkit.event.block.BlockBurnEvent;
+import org.bukkit.event.block.BlockExplodeEvent;
+import org.bukkit.event.block.BlockFromToEvent;
+import org.bukkit.event.block.BlockIgniteEvent;
+import org.bukkit.event.block.BlockPistonExtendEvent;
+import org.bukkit.event.block.BlockPistonRetractEvent;
+import org.bukkit.event.block.BlockPlaceEvent;
+import org.bukkit.event.entity.EntityChangeBlockEvent;
 import org.bukkit.event.entity.EntityDamageEvent;
+import org.bukkit.event.entity.EntityExplodeEvent;
 import org.bukkit.event.inventory.InventoryClickEvent;
 import org.bukkit.event.world.ChunkLoadEvent;
 import org.bukkit.event.player.PlayerInteractEntityEvent;
@@ -74,7 +84,8 @@ public final class GawharaCaravans extends JavaPlugin implements Listener, Comma
 
     private static final Map<String, String> DEFAULT_MESSAGES = Map.of(
             "messages.searching", "&eSearching for a safe spot for the caravan...",
-            "messages.already-searching", "&cA caravan location search is already in progress. Please wait.");
+            "messages.already-searching", "&cA caravan location search is already in progress. Please wait.",
+            "messages.structure-protected", "&cThe caravan wagon is protected while the merchant is here.");
 
     @Override
     public void onEnable() {
@@ -243,8 +254,9 @@ public final class GawharaCaravans extends JavaPlugin implements Listener, Comma
             return false;
         }
         try {
-            Location merchantLocation = location.clone();
-            merchantLocation.setYaw(0f); // face the wagon counter
+            // The merchant stands inside the wagon, behind the counter, facing the customers.
+            Location merchantLocation = location.clone().add(0, 1, 3);
+            merchantLocation.setYaw(180f);
             Villager merchant = (Villager) world.spawnEntity(merchantLocation, EntityType.VILLAGER);
             merchant.setAI(false);
             merchant.setInvulnerable(getConfig().getBoolean("merchant.invulnerable", true));
@@ -378,7 +390,7 @@ public final class GawharaCaravans extends JavaPlugin implements Listener, Comma
         placeBlock(c, 1, 1, 3, Material.HAY_BLOCK);
         BlockData hanging = Material.LANTERN.createBlockData();
         if (hanging instanceof Lantern lantern) lantern.setHanging(true);
-        placeBlock(c, 0, 2, 3, hanging);
+        placeBlock(c, -1, 2, 3, hanging);
 
         // Camp props: lantern posts and cargo beside the wagon.
         for (int dx : new int[]{-3, 3}) {
@@ -734,6 +746,85 @@ public final class GawharaCaravans extends JavaPlugin implements Listener, Comma
         if (!(event.getRightClicked() instanceof Villager villager) || !isTagged(villager)) return;
         event.setCancelled(true);
         if (activeCaravan != null) openShop(event.getPlayer(), activeCaravan);
+    }
+
+    // ------------------------------------------------------------------
+    // Wagon protection: nobody can break, burn, blow up or push the camp while the caravan is here.
+    // ------------------------------------------------------------------
+
+    private boolean isProtectedBlock(Block block) {
+        Caravan caravan = activeCaravan;
+        if (caravan == null || block == null || !block.getWorld().equals(caravan.world)) return false;
+        Location origin = caravan.location;
+        if (Math.abs(block.getX() - origin.getBlockX()) > 8 || Math.abs(block.getZ() - origin.getBlockZ()) > 8) return false;
+        return caravan.savedBlocks.containsKey(block.getX() + "|" + block.getY() + "|" + block.getZ());
+    }
+
+    @EventHandler(ignoreCancelled = true)
+    public void onProtectedBreak(BlockBreakEvent event) {
+        if (isProtectedBlock(event.getBlock())) {
+            event.setCancelled(true);
+            event.getPlayer().sendMessage(message("messages.structure-protected", Map.of()));
+        }
+    }
+
+    @EventHandler(ignoreCancelled = true)
+    public void onProtectedPlace(BlockPlaceEvent event) {
+        if (isProtectedBlock(event.getBlock())) {
+            event.setCancelled(true);
+            event.getPlayer().sendMessage(message("messages.structure-protected", Map.of()));
+        }
+    }
+
+    @EventHandler(ignoreCancelled = true)
+    public void onProtectedEntityExplode(EntityExplodeEvent event) {
+        event.blockList().removeIf(this::isProtectedBlock);
+    }
+
+    @EventHandler(ignoreCancelled = true)
+    public void onProtectedBlockExplode(BlockExplodeEvent event) {
+        event.blockList().removeIf(this::isProtectedBlock);
+    }
+
+    @EventHandler(ignoreCancelled = true)
+    public void onProtectedBurn(BlockBurnEvent event) {
+        if (isProtectedBlock(event.getBlock())) event.setCancelled(true);
+    }
+
+    @EventHandler(ignoreCancelled = true)
+    public void onProtectedIgnite(BlockIgniteEvent event) {
+        if (isProtectedBlock(event.getBlock())) event.setCancelled(true);
+    }
+
+    @EventHandler(ignoreCancelled = true)
+    public void onProtectedFlow(BlockFromToEvent event) {
+        if (isProtectedBlock(event.getToBlock())) event.setCancelled(true);
+    }
+
+    @EventHandler(ignoreCancelled = true)
+    public void onProtectedEntityChange(EntityChangeBlockEvent event) {
+        if (isProtectedBlock(event.getBlock())) event.setCancelled(true);
+    }
+
+    @EventHandler(ignoreCancelled = true)
+    public void onProtectedPistonExtend(BlockPistonExtendEvent event) {
+        for (Block moved : event.getBlocks()) {
+            if (isProtectedBlock(moved) || isProtectedBlock(moved.getRelative(event.getDirection()))) {
+                event.setCancelled(true);
+                return;
+            }
+        }
+        if (isProtectedBlock(event.getBlock().getRelative(event.getDirection()))) event.setCancelled(true);
+    }
+
+    @EventHandler(ignoreCancelled = true)
+    public void onProtectedPistonRetract(BlockPistonRetractEvent event) {
+        for (Block moved : event.getBlocks()) {
+            if (isProtectedBlock(moved)) {
+                event.setCancelled(true);
+                return;
+            }
+        }
     }
 
     @EventHandler

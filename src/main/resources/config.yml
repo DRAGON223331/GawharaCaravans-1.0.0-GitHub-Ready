@@ -145,6 +145,7 @@ messages:
   denied-world: '&cCaravans are disabled in that world.'
   searching: '&eSearching for a safe spot for the caravan...'
   already-searching: '&cA caravan location search is already in progress. Please wait.'
+  structure-protected: '&cThe caravan wagon is protected while the merchant is here.'
   unsafe-location: '&cCould not find a safe location. Try a different center or larger radius.'
   already-active: '&cA caravan is already visiting the server.'
   spawned-manual: '&aA caravan was spawned successfully.'
