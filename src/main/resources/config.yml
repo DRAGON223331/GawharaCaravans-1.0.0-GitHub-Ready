@@ -4,11 +4,8 @@
 # =====================================================
 
 settings:
-  # Only these worlds can receive random caravans.
-  enabled-worlds:
-    - world
-    - world_nether
-    - world_the_end
+  # Caravans spawn ONLY in this world (Overworld). Nether/End/other worlds are never used.
+  spawn-world: world
   # These worlds are always blocked, even if added above by mistake.
   blocked-worlds:
     - spawn
@@ -24,6 +21,11 @@ settings:
   announce-before-minutes: 2
   # How many safe locations to test before skipping a spawn.
   spawn-attempts: 50
+  # The caravan spawns only on a GRASS_BLOCK, never on trees/leaves, and this radius
+  # around it must be free of trees, water, lava and steep terrain.
+  # (The wagon camp needs about 7 blocks, so the radius is never below 7.)
+  clear-radius: 7
+  max-height-difference: 1
   # Keep caravans away from the world's spawn point.
   protect-spawn-radius: 180
   # Random position is selected in this ring around the center.
@@ -141,6 +143,8 @@ messages:
   no-active: '&cThere is no active caravan right now.'
   located: '&bThe caravan is in &f%world% &7at &f%x%, %y%, %z%&b.'
   denied-world: '&cCaravans are disabled in that world.'
+  searching: '&eSearching for a safe spot for the caravan...'
+  already-searching: '&cA caravan location search is already in progress. Please wait.'
   unsafe-location: '&cCould not find a safe location. Try a different center or larger radius.'
   already-active: '&cA caravan is already visiting the server.'
   spawned-manual: '&aA caravan was spawned successfully.'

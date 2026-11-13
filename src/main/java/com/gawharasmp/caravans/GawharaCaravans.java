@@ -2,7 +2,18 @@ package com.gawharasmp.caravans;
 
 import net.milkbowl.vault.economy.Economy;
 import net.milkbowl.vault.economy.EconomyResponse;
+import org.bukkit.Axis;
 import org.bukkit.Bukkit;
+import org.bukkit.configuration.file.YamlConfiguration;
+import org.bukkit.HeightMap;
+import org.bukkit.Tag;
+import org.bukkit.block.Block;
+import org.bukkit.block.BlockFace;
+import org.bukkit.block.data.BlockData;
+import org.bukkit.block.data.Directional;
+import org.bukkit.block.data.MultipleFacing;
+import org.bukkit.block.data.Orientable;
+import org.bukkit.block.data.type.Lantern;
 import org.bukkit.ChatColor;
 import org.bukkit.Location;
 import org.bukkit.Material;
@@ -33,7 +44,11 @@ import org.bukkit.plugin.RegisteredServiceProvider;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.scheduler.BukkitTask;
 
+import java.io.File;
+import java.io.IOException;
 import java.util.ArrayList;
+import java.util.concurrent.CompletableFuture;
+import java.util.function.Consumer;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
@@ -55,6 +70,11 @@ public final class GawharaCaravans extends JavaPlugin implements Listener, Comma
     private BukkitTask nextSpawnTask;
     private BukkitTask announceTask;
     private BukkitTask despawnTask;
+    private boolean searching;
+
+    private static final Map<String, String> DEFAULT_MESSAGES = Map.of(
+            "messages.searching", "&eSearching for a safe spot for the caravan...",
+            "messages.already-searching", "&cA caravan location search is already in progress. Please wait.");
 
     @Override
     public void onEnable() {
@@ -68,6 +88,7 @@ public final class GawharaCaravans extends JavaPlugin implements Listener, Comma
         getServer().getPluginManager().registerEvents(this, this);
         Objects.requireNonNull(getCommand("caravans"), "caravans command missing from plugin.yml").setExecutor(this);
         Objects.requireNonNull(getCommand("caravans")).setTabCompleter(this);
+        restoreSavedStructure();
         removeOrphanedCaravanEntities();
         scheduleNextCaravan(true);
         getLogger().info("GawharaCaravans enabled. Vault economy hooked successfully.");
@@ -111,20 +132,26 @@ public final class GawharaCaravans extends JavaPlugin implements Listener, Comma
                     broadcast("messages.approaching", Map.of("world", targetWorld.getName())), announceTicks);
         }
         nextSpawnTask = Bukkit.getScheduler().runTaskLater(this, () -> {
-            if (activeCaravan == null && !spawnCaravan(targetWorld, false)) {
-                getLogger().warning("Could not find a safe caravan spawn in " + targetWorld.getName());
+            if (activeCaravan == null && !searching) {
+                startCaravanSearch(targetWorld, false, ok -> {
+                    if (!ok) getLogger().warning("Could not find a safe caravan spawn in " + targetWorld.getName());
+                });
             }
             scheduleNextCaravan(false);
         }, delayTicks);
     }
 
+    /** The ONLY world caravans may spawn in (default: "world"). Other worlds are ignored even if old configs list them. */
+    private String getSpawnWorldName() {
+        String name = getConfig().getString("settings.spawn-world", "world");
+        return (name == null || name.isBlank()) ? "world" : name;
+    }
+
     private List<World> getEnabledWorlds() {
         List<World> result = new ArrayList<>();
-        for (String name : getConfig().getStringList("settings.enabled-worlds")) {
-            if (isWorldAllowed(name)) {
-                World world = Bukkit.getWorld(name);
-                if (world != null) result.add(world);
-            }
+        if (isWorldAllowed(getSpawnWorldName())) {
+            World world = Bukkit.getWorld(getSpawnWorldName());
+            if (world != null && world.getEnvironment() == World.Environment.NORMAL) result.add(world);
         }
         return result;
     }
@@ -134,22 +161,91 @@ public final class GawharaCaravans extends JavaPlugin implements Listener, Comma
         for (String blocked : getConfig().getStringList("settings.blocked-worlds")) {
             if (blocked.equalsIgnoreCase(worldName)) return false;
         }
-        for (String enabled : getConfig().getStringList("settings.enabled-worlds")) {
-            if (enabled.equalsIgnoreCase(worldName)) return true;
-        }
-        return false;
+        return getSpawnWorldName().equalsIgnoreCase(worldName);
     }
 
-    private boolean spawnCaravan(World world, boolean manual) {
+    /**
+     * Searches for a safe spot WITHOUT freezing the server: every chunk that the check needs is loaded
+     * asynchronously first, and only one candidate is checked per attempt.
+     */
+    private void startCaravanSearch(World world, boolean manual, Consumer<Boolean> done) {
+        if (activeCaravan != null || searching || world == null || !isWorldAllowed(world.getName())) {
+            done.accept(false);
+            return;
+        }
+        searching = true;
+        int max = Math.max(5, getConfig().getInt("settings.spawn-attempts", 50));
+        searchAttempt(world, manual, 0, max, done);
+    }
+
+    private void searchAttempt(World world, boolean manual, int attempt, int max, Consumer<Boolean> done) {
+        if (!isEnabled()) {
+            searching = false;
+            return;
+        }
+        if (attempt >= max || activeCaravan != null) {
+            searching = false;
+            done.accept(false);
+            return;
+        }
+        int[] candidate = pickCandidate(world);
+        if (candidate == null) {
+            searchAttempt(world, manual, attempt + 1, max, done);
+            return;
+        }
+        int radius = getClearRadius();
+        List<CompletableFuture<?>> futures = new ArrayList<>();
+        for (int cx = (candidate[0] - radius) >> 4; cx <= (candidate[0] + radius) >> 4; cx++) {
+            for (int cz = (candidate[1] - radius) >> 4; cz <= (candidate[1] + radius) >> 4; cz++) {
+                futures.add(world.getChunkAtAsync(cx, cz, true));
+            }
+        }
+        CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).whenComplete((ignored, error) -> {
+            if (!isEnabled()) {
+                searching = false;
+                return;
+            }
+            Bukkit.getScheduler().runTask(this, () -> {
+                Location location = null;
+                if (error == null && activeCaravan == null) {
+                    try {
+                        location = validateCandidate(world, candidate[0], candidate[1]);
+                    } catch (RuntimeException ex) {
+                        getLogger().warning("Caravan location check failed: " + ex.getMessage());
+                    }
+                }
+                if (location != null) {
+                    searching = false;
+                    done.accept(spawnCaravanAt(location, manual));
+                } else {
+                    searchAttempt(world, manual, attempt + 1, max, done);
+                }
+            });
+        });
+    }
+
+    private int getClearRadius() {
+        return Math.max(7, Math.min(10, getConfig().getInt("settings.clear-radius", 7)));
+    }
+
+    private boolean spawnCaravanAt(Location location, boolean manual) {
         if (activeCaravan != null) return false;
+        World world = location.getWorld();
         if (world == null || !isWorldAllowed(world.getName())) return false;
-        Location location = findSafeLocation(world);
-        if (location == null) return false;
 
         Caravan caravan = new Caravan(UUID.randomUUID(), world, location);
         createStock(caravan);
         try {
-            Villager merchant = (Villager) world.spawnEntity(location, EntityType.VILLAGER);
+            buildCaravanStructure(caravan);
+        } catch (RuntimeException ex) {
+            getLogger().severe("Failed to build caravan wagon: " + ex.getMessage());
+            restoreStructure(caravan);
+            return false;
+        }
+        try {
+            Location merchantLocation = location.clone();
+            merchantLocation.setYaw(0f); // face the wagon counter
+            Villager merchant = (Villager) world.spawnEntity(merchantLocation, EntityType.VILLAGER);
             merchant.setAI(false);
             merchant.setInvulnerable(getConfig().getBoolean("merchant.invulnerable", true));
             merchant.setSilent(getConfig().getBoolean("merchant.silent", false));
@@ -160,10 +256,15 @@ public final class GawharaCaravans extends JavaPlugin implements Listener, Comma
             tag(merchant);
             caravan.entities.add(merchant.getUniqueId());
 
+            // Llamas stand in front of the wagon, like they pulled it here.
             int llamaCount = Math.max(0, Math.min(6, getConfig().getInt("merchant.llamas", 2)));
             for (int i = 0; i < llamaCount; i++) {
-                double angle = (Math.PI * 2.0 * i) / Math.max(1, llamaCount);
-                Location llamaLocation = location.clone().add(Math.cos(angle) * 1.8, 0, Math.sin(angle) * 1.8);
+                double dx = -4.0 - (i / 2) * 1.5;
+                double dz = 3.0 + ((i % 2 == 0) ? -0.6 : 0.6);
+                double lx = location.getBlockX() + 0.5 + dx;
+                double lz = location.getBlockZ() + 0.5 + dz;
+                int ly = world.getHighestBlockYAt((int) Math.floor(lx), (int) Math.floor(lz), HeightMap.MOTION_BLOCKING) + 1;
+                Location llamaLocation = new Location(world, lx, ly, lz, 90f, 0f);
                 Llama llama = (Llama) world.spawnEntity(llamaLocation, EntityType.LLAMA);
                 llama.setAI(false);
                 llama.setInvulnerable(getConfig().getBoolean("merchant.invulnerable", true));
@@ -178,6 +279,7 @@ public final class GawharaCaravans extends JavaPlugin implements Listener, Comma
                 Entity entity = Bukkit.getEntity(uuid);
                 if (entity != null) entity.remove();
             }
+            restoreStructure(caravan);
             getLogger().severe("Failed to spawn caravan entities: " + ex.getMessage());
             return false;
         }
@@ -189,6 +291,205 @@ public final class GawharaCaravans extends JavaPlugin implements Listener, Comma
         despawnTask = Bukkit.getScheduler().runTaskLater(this, () -> despawnActiveCaravan(true), stay * 1200L);
         if (manual) getLogger().info("Caravan was spawned manually at " + location.getWorld().getName() + " " + location.getBlockX() + ", " + location.getBlockY() + ", " + location.getBlockZ());
         return true;
+    }
+
+    // ------------------------------------------------------------------
+    // Wagon / camp structure (temporary, fully restored when the caravan leaves)
+    // Coordinates are relative to the merchant: +z = toward the wagon, y=0 = merchant's feet.
+    // ------------------------------------------------------------------
+
+    private void placeBlock(Caravan c, int dx, int dy, int dz, BlockData data) {
+        Block block = c.world.getBlockAt(c.location.getBlockX() + dx, c.location.getBlockY() + dy, c.location.getBlockZ() + dz);
+        String key = block.getX() + "|" + block.getY() + "|" + block.getZ();
+        c.savedBlocks.putIfAbsent(key, block.getBlockData().getAsString());
+        block.setBlockData(data, false);
+    }
+
+    private void placeBlock(Caravan c, int dx, int dy, int dz, Material material) {
+        placeBlock(c, dx, dy, dz, material.createBlockData());
+    }
+
+    private void buildCaravanStructure(Caravan c) {
+        List<int[]> fences = new ArrayList<>();
+        List<int[]> footprint = new ArrayList<>();
+
+        // Clear plants/flowers in the build volume.
+        for (int dx = -3; dx <= 3; dx++) {
+            for (int dz = 0; dz <= 5; dz++) {
+                for (int dy = 0; dy <= 3; dy++) {
+                    Block b = c.world.getBlockAt(c.location.getBlockX() + dx, c.location.getBlockY() + dy, c.location.getBlockZ() + dz);
+                    if (!b.getType().isAir()) placeBlock(c, dx, dy, dz, Material.AIR);
+                }
+            }
+        }
+
+        // Floor of the wagon (5 x 3).
+        for (int dx = -2; dx <= 2; dx++) {
+            for (int dz = 2; dz <= 4; dz++) {
+                placeBlock(c, dx, 0, dz, Material.SPRUCE_PLANKS);
+                footprint.add(new int[]{dx, dz});
+            }
+        }
+        // Back wall + end walls.
+        for (int dx = -2; dx <= 2; dx++) {
+            for (int dy = 1; dy <= 2; dy++) placeBlock(c, dx, dy, 4, Material.SPRUCE_PLANKS);
+        }
+        for (int dx : new int[]{-2, 2}) {
+            for (int dy = 1; dy <= 2; dy++) {
+                placeBlock(c, dx, dy, 3, Material.SPRUCE_PLANKS);
+                placeBlock(c, dx, dy, 2, Material.SPRUCE_FENCE);
+                fences.add(new int[]{dx, dy, 2});
+            }
+        }
+        // Sales counter (service window).
+        for (int dx = -1; dx <= 1; dx++) placeBlock(c, dx, 1, 2, Material.SPRUCE_SLAB);
+        // Front posts holding the awning.
+        for (int dx : new int[]{-2, 2}) {
+            for (int dy = 0; dy <= 2; dy++) placeBlock(c, dx, dy, 1, Material.DARK_OAK_LOG);
+            footprint.add(new int[]{dx, 1});
+        }
+        // Striped canvas roof + awning over the customers.
+        for (int dx = -2; dx <= 2; dx++) {
+            Material stripe = ((dx + 2) % 2 == 0) ? Material.WHITE_WOOL : Material.RED_WOOL;
+            for (int dz = 1; dz <= 4; dz++) placeBlock(c, dx, 3, dz, stripe);
+        }
+        // Wheels on the back side: a log hub with fence spokes/rim.
+        for (int hubX : new int[]{-1, 1}) {
+            BlockData hub = Material.DARK_OAK_LOG.createBlockData();
+            if (hub instanceof Orientable orientable) orientable.setAxis(Axis.Z);
+            placeBlock(c, hubX, 1, 5, hub);
+            for (int ox = -1; ox <= 1; ox++) {
+                for (int oy = -1; oy <= 1; oy++) {
+                    if (ox == 0 && oy == 0) continue;
+                    placeBlock(c, hubX + ox, 1 + oy, 5, Material.DARK_OAK_FENCE);
+                    fences.add(new int[]{hubX + ox, 1 + oy, 5});
+                }
+            }
+            footprint.add(new int[]{hubX, 5});
+        }
+        footprint.add(new int[]{-2, 5});
+        footprint.add(new int[]{0, 5});
+        footprint.add(new int[]{2, 5});
+
+        // Cargo inside the wagon.
+        BlockData barrel = Material.BARREL.createBlockData();
+        if (barrel instanceof Directional directional) directional.setFacing(BlockFace.UP);
+        placeBlock(c, -1, 1, 3, barrel);
+        placeBlock(c, 1, 1, 3, Material.HAY_BLOCK);
+        BlockData hanging = Material.LANTERN.createBlockData();
+        if (hanging instanceof Lantern lantern) lantern.setHanging(true);
+        placeBlock(c, 0, 2, 3, hanging);
+
+        // Camp props: lantern posts and cargo beside the wagon.
+        for (int dx : new int[]{-3, 3}) {
+            for (int dy = 0; dy <= 1; dy++) {
+                placeBlock(c, dx, dy, 0, Material.SPRUCE_FENCE);
+                fences.add(new int[]{dx, dy, 0});
+            }
+            placeBlock(c, dx, 2, 0, Material.LANTERN);
+            footprint.add(new int[]{dx, 0});
+        }
+        placeBlock(c, 3, 0, 3, barrel.clone());
+        placeBlock(c, 3, 0, 4, Material.HAY_BLOCK);
+        footprint.add(new int[]{3, 3});
+        footprint.add(new int[]{3, 4});
+
+        // Fill holes under the structure so nothing floats on uneven ground.
+        for (int[] cell : footprint) {
+            for (int dy = -1; dy >= -3; dy--) {
+                Block under = c.world.getBlockAt(c.location.getBlockX() + cell[0], c.location.getBlockY() + dy, c.location.getBlockZ() + cell[1]);
+                if (under.getType().isAir() || under.isPassable() || under.isLiquid()) placeBlock(c, cell[0], dy, cell[1], Material.DIRT);
+                else break;
+            }
+        }
+
+        // Connect fences manually (blocks were placed without physics updates).
+        for (int[] f : fences) {
+            Block b = c.world.getBlockAt(c.location.getBlockX() + f[0], c.location.getBlockY() + f[1], c.location.getBlockZ() + f[2]);
+            if (!(b.getBlockData() instanceof MultipleFacing facing)) continue;
+            for (BlockFace face : new BlockFace[]{BlockFace.NORTH, BlockFace.SOUTH, BlockFace.EAST, BlockFace.WEST}) {
+                Material neighbor = b.getRelative(face).getType();
+                facing.setFace(face, Tag.FENCES.isTagged(neighbor) || (neighbor.isSolid() && neighbor.isOccluding()));
+            }
+            b.setBlockData(facing, false);
+        }
+
+        // Keep the structure's chunks loaded until the caravan leaves, so it can always be restored.
+        int minCx = (c.location.getBlockX() - 5) >> 4, maxCx = (c.location.getBlockX() + 3) >> 4;
+        int minCz = (c.location.getBlockZ()) >> 4, maxCz = (c.location.getBlockZ() + 6) >> 4;
+        for (int cx = minCx; cx <= maxCx; cx++) {
+            for (int cz = minCz; cz <= maxCz; cz++) {
+                c.world.addPluginChunkTicket(cx, cz, this);
+                c.chunkKeys.add(((long) cx << 32) | (cz & 0xFFFFFFFFL));
+            }
+        }
+        saveStructureFile(c);
+    }
+
+    private File structureFile() {
+        return new File(getDataFolder(), "structure.yml");
+    }
+
+    private void saveStructureFile(Caravan c) {
+        try {
+            getDataFolder().mkdirs();
+            YamlConfiguration yaml = new YamlConfiguration();
+            yaml.set("world", c.world.getName());
+            List<String> lines = new ArrayList<>();
+            for (Map.Entry<String, String> entry : c.savedBlocks.entrySet()) lines.add(entry.getKey() + "|" + entry.getValue());
+            yaml.set("blocks", lines);
+            yaml.save(structureFile());
+        } catch (IOException ex) {
+            getLogger().warning("Could not save structure.yml: " + ex.getMessage());
+        }
+    }
+
+    private void restoreStructure(Caravan c) {
+        List<Map.Entry<String, String>> entries = new ArrayList<>(c.savedBlocks.entrySet());
+        Collections.reverse(entries);
+        for (Map.Entry<String, String> entry : entries) {
+            try {
+                String[] p = entry.getKey().split("\\|");
+                c.world.getBlockAt(Integer.parseInt(p[0]), Integer.parseInt(p[1]), Integer.parseInt(p[2]))
+                        .setBlockData(Bukkit.createBlockData(entry.getValue()), false);
+            } catch (RuntimeException ex) {
+                getLogger().warning("Could not restore block " + entry.getKey() + ": " + ex.getMessage());
+            }
+        }
+        for (long key : c.chunkKeys) c.world.removePluginChunkTicket((int) (key >> 32), (int) key, this);
+        c.chunkKeys.clear();
+        c.savedBlocks.clear();
+        File file = structureFile();
+        if (file.exists() && !file.delete()) getLogger().warning("Could not delete structure.yml");
+    }
+
+    /** If the server stopped abruptly while a caravan was out, put the terrain back on startup. */
+    private void restoreSavedStructure() {
+        File file = structureFile();
+        if (!file.exists()) return;
+        try {
+            YamlConfiguration yaml = YamlConfiguration.loadConfiguration(file);
+            World world = Bukkit.getWorld(yaml.getString("world", ""));
+            if (world == null) {
+                getLogger().warning("structure.yml world is not loaded; leaving file for next start.");
+                return;
+            }
+            List<String> lines = new ArrayList<>(yaml.getStringList("blocks"));
+            Collections.reverse(lines);
+            for (String line : lines) {
+                String[] p = line.split("\\|", 4);
+                if (p.length < 4) continue;
+                try {
+                    world.getBlockAt(Integer.parseInt(p[0]), Integer.parseInt(p[1]), Integer.parseInt(p[2]))
+                            .setBlockData(Bukkit.createBlockData(p[3]), false);
+                } catch (RuntimeException ex) {
+                    getLogger().warning("Could not restore saved block " + line + ": " + ex.getMessage());
+                }
+            }
+            getLogger().info("Restored terrain from an unfinished caravan structure.");
+        } finally {
+            if (file.exists() && !file.delete()) getLogger().warning("Could not delete structure.yml");
+        }
     }
 
     private Villager.Profession parseProfession(String raw) {
@@ -215,37 +516,80 @@ public final class GawharaCaravans extends JavaPlugin implements Listener, Comma
         }
     }
 
-    private Location findSafeLocation(World world) {
+    /** Picks a random x/z candidate (no chunk loading). Returns null when the point is rejected cheaply. */
+    private int[] pickCandidate(World world) {
         Location center = getConfiguredCenter(world);
         int minRadius = Math.max(1, getConfig().getInt("settings.spawn-radius.min", 250));
         int maxRadius = Math.max(minRadius, getConfig().getInt("settings.spawn-radius.max", 750));
         int spawnProtection = Math.max(0, getConfig().getInt("settings.protect-spawn-radius", 180));
-        int attempts = Math.max(5, getConfig().getInt("settings.spawn-attempts", 50));
+        int clearRadius = getClearRadius();
         Random random = ThreadLocalRandom.current();
-        for (int i = 0; i < attempts; i++) {
-            double angle = random.nextDouble() * Math.PI * 2.0;
-            double radius = minRadius + random.nextDouble() * (maxRadius - minRadius);
-            int x = center.getBlockX() + (int) Math.round(Math.cos(angle) * radius);
-            int z = center.getBlockZ() + (int) Math.round(Math.sin(angle) * radius);
-            Location worldSpawn = world.getSpawnLocation();
-            double spawnDx = (x + 0.5) - worldSpawn.getX();
-            double spawnDz = (z + 0.5) - worldSpawn.getZ();
-            if ((spawnDx * spawnDx) + (spawnDz * spawnDz) < (double) spawnProtection * spawnProtection) continue;
-            int y = world.getHighestBlockYAt(x, z) + 1;
-            if (y <= world.getMinHeight() || y + 1 >= world.getMaxHeight()) continue;
-            if (world.getEnvironment() == World.Environment.NETHER && y > 120) continue;
-            Location result = new Location(world, x + 0.5, y, z + 0.5);
-            if (getConfig().getBoolean("settings.respect-world-border", true) && !world.getWorldBorder().isInside(result)) continue;
-            Material floor = world.getBlockAt(x, y - 1, z).getType();
-            Material feet = world.getBlockAt(x, y, z).getType();
-            Material head = world.getBlockAt(x, y + 1, z).getType();
-            if (!floor.isSolid() || floor.isAir() || floor == Material.MAGMA_BLOCK || floor == Material.CAMPFIRE || floor == Material.SOUL_CAMPFIRE) continue;
-            if (!feet.isAir() && !world.getBlockAt(x, y, z).isPassable()) continue;
-            if (!head.isAir() && !world.getBlockAt(x, y + 1, z).isPassable()) continue;
-            if (feet == Material.WATER || feet == Material.LAVA || head == Material.WATER || head == Material.LAVA) continue;
-            return result;
+        double angle = random.nextDouble() * Math.PI * 2.0;
+        double radius = minRadius + random.nextDouble() * (maxRadius - minRadius);
+        int x = center.getBlockX() + (int) Math.round(Math.cos(angle) * radius);
+        int z = center.getBlockZ() + (int) Math.round(Math.sin(angle) * radius);
+        Location worldSpawn = world.getSpawnLocation();
+        double spawnDx = (x + 0.5) - worldSpawn.getX();
+        double spawnDz = (z + 0.5) - worldSpawn.getZ();
+        if ((spawnDx * spawnDx) + (spawnDz * spawnDz) < (double) spawnProtection * spawnProtection) return null;
+        if (getConfig().getBoolean("settings.respect-world-border", true)) {
+            int y = world.getMinHeight() + 1;
+            if (!world.getWorldBorder().isInside(new Location(world, x + 0.5, y, z + 0.5))) return null;
+            if (!world.getWorldBorder().isInside(new Location(world, x + 0.5 + clearRadius, y, z + 0.5 + clearRadius))) return null;
+            if (!world.getWorldBorder().isInside(new Location(world, x + 0.5 - clearRadius, y, z + 0.5 - clearRadius))) return null;
         }
-        return null;
+        return new int[]{x, z};
+    }
+
+    /** Full safety check. Call only after the chunks around (x, z) are loaded. */
+    private Location validateCandidate(World world, int x, int z) {
+        int clearRadius = getClearRadius();
+        int maxHeightDiff = Math.max(1, getConfig().getInt("settings.max-height-difference", 1));
+        // MOTION_BLOCKING counts leaves and logs, so standing on a tree is caught by the grass check.
+        int groundY = world.getHighestBlockYAt(x, z, HeightMap.MOTION_BLOCKING);
+        int y = groundY + 1;
+        if (y <= world.getMinHeight() || y + 4 >= world.getMaxHeight()) return null;
+
+        // 1) The block we stand on MUST be grass.
+        if (world.getBlockAt(x, groundY, z).getType() != Material.GRASS_BLOCK) return null;
+
+        // 2) Space for the merchant: feet + head must be empty/passable.
+        Block feetBlock = world.getBlockAt(x, y, z);
+        Block headBlock = world.getBlockAt(x, y + 1, z);
+        if (!feetBlock.isPassable() || feetBlock.isLiquid()) return null;
+        if (!headBlock.isPassable() || headBlock.isLiquid()) return null;
+
+        // 3) The area around must be open: no trees, no water/lava, and fairly flat.
+        if (!isOpenGrassArea(world, x, z, groundY, clearRadius, maxHeightDiff)) return null;
+
+        return new Location(world, x + 0.5, y, z + 0.5);
+    }
+
+    /**
+     * Checks a circular area around (cx, cz). Every column's top block must not be a tree part
+     * (logs/leaves), liquid, cactus or other hazard, and the terrain must not differ from the
+     * center height by more than maxHeightDiff.
+     */
+    private boolean isOpenGrassArea(World world, int cx, int cz, int groundY, int radius, int maxHeightDiff) {
+        int radiusSq = radius * radius;
+        for (int dx = -radius; dx <= radius; dx++) {
+            for (int dz = -radius; dz <= radius; dz++) {
+                if ((dx * dx) + (dz * dz) > radiusSq) continue;
+                int x = cx + dx;
+                int z = cz + dz;
+                int top = world.getHighestBlockYAt(x, z, HeightMap.MOTION_BLOCKING);
+                if (Math.abs(top - groundY) > maxHeightDiff) return false;
+                Block block = world.getBlockAt(x, top, z);
+                Material type = block.getType();
+                if (Tag.LOGS.isTagged(type) || Tag.LEAVES.isTagged(type)) return false;
+                if (block.isLiquid() || type == Material.WATER || type == Material.LAVA) return false;
+                if (type == Material.CACTUS || type == Material.MAGMA_BLOCK || type == Material.CAMPFIRE
+                        || type == Material.SOUL_CAMPFIRE || type == Material.FIRE || type == Material.POWDER_SNOW
+                        || type == Material.BAMBOO || type == Material.SUGAR_CANE) return false;
+                if (type == Material.MUSHROOM_STEM || type == Material.RED_MUSHROOM_BLOCK || type == Material.BROWN_MUSHROOM_BLOCK) return false;
+            }
+        }
+        return true;
     }
 
     private Location getConfiguredCenter(World world) {
@@ -307,6 +651,7 @@ public final class GawharaCaravans extends JavaPlugin implements Listener, Comma
             Entity entity = Bukkit.getEntity(uuid);
             if (entity != null && !entity.isDead()) entity.remove();
         }
+        restoreStructure(activeCaravan);
         activeCaravan = null;
         cancelTask(despawnTask);
         if (announce) broadcast("messages.despawned", Map.of());
@@ -567,7 +912,7 @@ public final class GawharaCaravans extends JavaPlugin implements Listener, Comma
         if (args.length == 0 || args[0].equalsIgnoreCase("info")) {
             sender.sendMessage(message("messages.info", Map.of(
                     "active", activeCaravan == null ? "No" : "Yes",
-                    "worlds", String.join(", ", getConfig().getStringList("settings.enabled-worlds")))));
+                    "worlds", getSpawnWorldName())));
             sender.sendMessage(message("messages.usage", Map.of()));
             return true;
         }
@@ -598,11 +943,18 @@ public final class GawharaCaravans extends JavaPlugin implements Listener, Comma
                     sender.sendMessage(message("messages.already-active", Map.of()));
                     return true;
                 }
-                if (!spawnCaravan(world, true)) sender.sendMessage(message("messages.unsafe-location", Map.of()));
-                else {
-                    sender.sendMessage(message("messages.spawned-manual", Map.of()));
-                    scheduleNextCaravan(false);
+                if (searching) {
+                    sender.sendMessage(message("messages.already-searching", Map.of()));
+                    return true;
                 }
+                sender.sendMessage(message("messages.searching", Map.of()));
+                startCaravanSearch(world, true, ok -> {
+                    if (!ok) sender.sendMessage(message("messages.unsafe-location", Map.of()));
+                    else {
+                        sender.sendMessage(message("messages.spawned-manual", Map.of()));
+                        scheduleNextCaravan(false);
+                    }
+                });
                 return true;
             }
             case "despawn" -> {
@@ -653,7 +1005,7 @@ public final class GawharaCaravans extends JavaPlugin implements Listener, Comma
     public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
         if (args.length == 1) return filter(List.of("info", "locate", "spawn", "despawn", "setcenter", "reload"), args[0]);
         if (args.length == 2 && args[0].equalsIgnoreCase("spawn") && sender.hasPermission("gawharacaravans.admin")) {
-            return filter(getConfig().getStringList("settings.enabled-worlds"), args[1]);
+            return filter(List.of(getSpawnWorldName()), args[1]);
         }
         return Collections.emptyList();
     }
@@ -677,7 +1029,7 @@ public final class GawharaCaravans extends JavaPlugin implements Listener, Comma
 
     private String message(String path, Map<String, String> values) {
         String prefix = getConfig().getString("messages.prefix", "&8[&bCaravan&8] &r");
-        String body = getConfig().getString(path, "&cMissing message: " + path);
+        String body = getConfig().getString(path, DEFAULT_MESSAGES.getOrDefault(path, "&cMissing message: " + path));
         String output = prefix + body;
         for (Map.Entry<String, String> entry : values.entrySet()) {
             String key = entry.getKey();
@@ -701,6 +1053,8 @@ public final class GawharaCaravans extends JavaPlugin implements Listener, Comma
         private final Location location;
         private final List<UUID> entities = new ArrayList<>();
         private final Map<Integer, ProductStock> products = new LinkedHashMap<>();
+        private final Map<String, String> savedBlocks = new LinkedHashMap<>();
+        private final List<Long> chunkKeys = new ArrayList<>();
         private Caravan(UUID id, World world, Location location) {
             this.id = id;
             this.world = world;
